@@ -12,11 +12,6 @@ DB = "search_data.db"
 RELATED_LIMIT = 5
 GENERAL_PROMOTION_THRESHOLD = 5  # auto-create topic after this many similar "general" searches
 
-
-# =====================================================
-# Keyword Topics (negative / "You Aren’t Alone" focus)
-# =====================================================
-
 TOPIC_KEYWORDS = {
 
     # Loss
@@ -142,11 +137,6 @@ def phrase_match(text, phrase):
     pattern = r"\b" + re.escape(phrase) + r"\b"
     return re.search(pattern, text) is not None
 
-
-# =====================================================
-# Topic classification
-# =====================================================
-
 def classify_topic(term: str) -> str:
     text = normalize(term)
 
@@ -169,11 +159,6 @@ def classify_topic(term: str) -> str:
 
     return "general distress"
 
-
-# =====================================================
-# Database
-# =====================================================
-
 def init_db():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -192,11 +177,6 @@ def init_db():
 
 
 init_db()
-
-
-# =====================================================
-# Auto-learning for unknown topics
-# =====================================================
 
 def maybe_promote_general(term):
     """
@@ -229,11 +209,6 @@ def maybe_promote_general(term):
 
     conn.close()
     return "general distress"
-
-
-# =====================================================
-# Core logic
-# =====================================================
 
 def record_search(term):
     topic = classify_topic(term)
@@ -295,11 +270,6 @@ def get_stats(topic):
         "related_terms": related
     }
 
-
-# =====================================================
-# Routes
-# =====================================================
-
 @app.route("/")
 def home():
     return "You Aren’t Alone API running"
@@ -329,11 +299,6 @@ def search():
         "related_terms": stats["related_terms"],
         "message": message
     })
-
-
-# =====================================================
-# Run
-# =====================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
