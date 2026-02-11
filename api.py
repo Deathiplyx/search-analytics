@@ -10,11 +10,6 @@ CORS(app)
 DB = "search_data.db"
 RELATED_LIMIT = 5
 
-
-# =====================================================
-# Topic Keywords (Balanced: Positive + Negative + Life)
-# =====================================================
-
 TOPIC_KEYWORDS = {
 
     # ---------- Positive ----------
@@ -102,10 +97,6 @@ TOPIC_KEYWORDS = {
 }
 
 
-# =====================================================
-# Topic Classifier
-# =====================================================
-
 def classify_topic(term: str) -> str:
     text = term.lower()
 
@@ -128,10 +119,6 @@ def classify_topic(term: str) -> str:
     return "general"
 
 
-# =====================================================
-# Database
-# =====================================================
-
 def init_db():
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -150,11 +137,6 @@ def init_db():
 
 
 init_db()
-
-
-# =====================================================
-# Core Logic
-# =====================================================
 
 def record_search(term):
     topic = classify_topic(term)
@@ -177,11 +159,9 @@ def get_stats(topic):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
-    # Count for this topic
     cur.execute("SELECT COUNT(*) FROM searches WHERE topic = ?", (topic,))
     count = cur.fetchone()[0]
 
-    # Last searched
     cur.execute(
         "SELECT timestamp FROM searches WHERE topic = ? ORDER BY id DESC LIMIT 1",
         (topic,)
@@ -189,11 +169,9 @@ def get_stats(topic):
     row = cur.fetchone()
     last = row[0] if row else None
 
-    # Total searches
     cur.execute("SELECT COUNT(*) FROM searches")
     total_all = cur.fetchone()[0]
 
-    # Most common terms in this topic
     cur.execute(
         """
         SELECT term, COUNT(*) as c
@@ -217,10 +195,6 @@ def get_stats(topic):
         "related_terms": related
     }
 
-
-# =====================================================
-# Routes
-# =====================================================
 
 @app.route("/")
 def home():
@@ -253,9 +227,6 @@ def search():
     })
 
 
-# =====================================================
-# Run
-# =====================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
