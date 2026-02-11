@@ -3,20 +3,134 @@ from flask_cors import CORS
 import sqlite3
 import os
 from datetime import datetime
-import numpy as np
-import pickle
-
-from sentence_transformers import SentenceTransformer
 
 app = Flask(__name__)
 CORS(app)
 
 DB = "search_data.db"
-SIM_THRESHOLD = 0.75
 RELATED_LIMIT = 5
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
 
+# =====================================================
+# Topic Keywords (Balanced: Positive + Negative + Life)
+# =====================================================
+
+TOPIC_KEYWORDS = {
+
+    # ---------- Positive ----------
+    "achievement / success": [
+        "got a job", "promotion", "passed", "graduated", "won",
+        "achievement", "accomplished", "succeeded", "made it",
+        "finished", "completed", "proud of myself"
+    ],
+
+    "happiness / good mood": [
+        "happy", "excited", "great day", "feeling good",
+        "amazing", "joy", "content", "life is good",
+        "good mood", "feeling better"
+    ],
+
+    "relief / improvement": [
+        "relieved", "finally better", "things improved",
+        "getting better", "recovered", "healing", "improving"
+    ],
+
+    "relationships (positive)": [
+        "made a friend", "new friend", "date went well",
+        "engaged", "married", "reconnected", "family time"
+    ],
+
+    # ---------- Energy / Health ----------
+    "fatigue / burnout": [
+        "tired", "exhausted", "burnt", "burned out",
+        "no energy", "drained", "fatigue", "sleepy"
+    ],
+
+    "physical health": [
+        "sick", "ill", "pain", "headache", "doctor",
+        "hospital", "injury", "health problem"
+    ],
+
+    # ---------- Social ----------
+    "loneliness": [
+        "lonely", "alone", "no friends", "isolated",
+        "nobody", "no one", "left out", "ignored"
+    ],
+
+    "relationships (conflict)": [
+        "argument", "fight", "breakup", "broke up",
+        "divorce", "toxic", "relationship problems",
+        "family issues"
+    ],
+
+    # ---------- Emotional distress ----------
+    "anxiety / worry": [
+        "anxious", "anxiety", "worried", "panic",
+        "overthinking", "fear", "scared", "nervous"
+    ],
+
+    "stress / overwhelmed": [
+        "stressed", "overwhelmed", "pressure",
+        "too much", "cant handle"
+    ],
+
+    "sadness / depression": [
+        "sad", "depressed", "hopeless", "empty",
+        "down", "unhappy", "miserable"
+    ],
+
+    "self-esteem / worth": [
+        "worthless", "hate myself", "not good enough",
+        "failure", "useless"
+    ],
+
+    "anger / frustration": [
+        "angry", "mad", "frustrated", "annoyed",
+        "pissed", "irritated"
+    ],
+
+    # ---------- Life situations ----------
+    "work / school": [
+        "exam", "test", "homework", "school",
+        "college", "work", "job", "boss", "deadline"
+    ],
+
+    "life changes": [
+        "moving", "new city", "new job", "lost my job",
+        "big change", "transition", "starting over"
+    ]
+}
+
+
+# =====================================================
+# Topic Classifier
+# =====================================================
+
+def classify_topic(term: str) -> str:
+    text = term.lower()
+
+    best_topic = None
+    best_score = 0
+
+    for topic, keywords in TOPIC_KEYWORDS.items():
+        score = 0
+        for kw in keywords:
+            if kw in text:
+                score += len(kw)  # longer phrase = stronger match
+
+        if score > best_score:
+            best_score = score
+            best_topic = topic
+
+    if best_topic:
+        return best_topic
+
+    return "general"
+
+
+# =====================================================
+# Database
+# =====================================================
 
 def init_db():
     conn = sqlite3.connect(DB)
@@ -31,13 +145,6 @@ def init_db():
         )
     """)
 
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS topics (
-            topic TEXT PRIMARY KEY,
-            embedding BLOB
-        )
-    """)
-
     conn.commit()
     conn.close()
 
@@ -45,49 +152,12 @@ def init_db():
 init_db()
 
 
-def get_embedding(text):
-    emb = model.encode(text)
-    return emb
-
-
-def cosine_similarity(a, b):
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
-
-def find_or_create_topic(term):
-    conn = sqlite3.connect(DB)
-    cur = conn.cursor()
-
-    emb = get_embedding(term)
-
-    cur.execute("SELECT topic, embedding FROM topics")
-    rows = cur.fetchall()
-
-    best_topic = None
-    best_score = 0
-
-    for topic, blob in rows:
-        topic_emb = pickle.loads(blob)
-        score = cosine_similarity(emb, topic_emb)
-
-        if score > best_score:
-            best_score = score
-            best_topic = topic
-
-    if best_topic and best_score >= SIM_THRESHOLD:
-        conn.close()
-        return best_topic
-
-    cur.execute(
-        "INSERT INTO topics (topic, embedding) VALUES (?, ?)",
-        (term, pickle.dumps(emb))
-    )
-    conn.commit()
-    conn.close()
-
-    return term
+# =====================================================
+# Core Logic
+# =====================================================
 
 def record_search(term):
-    topic = find_or_create_topic(term)
+    topic = classify_topic(term)
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -102,13 +172,16 @@ def record_search(term):
 
     return topic
 
+
 def get_stats(topic):
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
 
+    # Count for this topic
     cur.execute("SELECT COUNT(*) FROM searches WHERE topic = ?", (topic,))
     count = cur.fetchone()[0]
 
+    # Last searched
     cur.execute(
         "SELECT timestamp FROM searches WHERE topic = ? ORDER BY id DESC LIMIT 1",
         (topic,)
@@ -116,9 +189,11 @@ def get_stats(topic):
     row = cur.fetchone()
     last = row[0] if row else None
 
+    # Total searches
     cur.execute("SELECT COUNT(*) FROM searches")
     total_all = cur.fetchone()[0]
 
+    # Most common terms in this topic
     cur.execute(
         """
         SELECT term, COUNT(*) as c
@@ -142,9 +217,14 @@ def get_stats(topic):
         "related_terms": related
     }
 
+
+# =====================================================
+# Routes
+# =====================================================
+
 @app.route("/")
 def home():
-    return "Search analytics API running"
+    return "Search analytics API running (lightweight)"
 
 
 @app.route("/search")
@@ -164,13 +244,18 @@ def search():
 
     return jsonify({
         "term": term,
-        "topic": topic,
+        "topic": stats["topic"],
         "count": stats["count"],
         "last_searched": stats["last_searched"],
         "total_searches": stats["total_searches"],
         "related_terms": stats["related_terms"],
         "message": message
     })
+
+
+# =====================================================
+# Run
+# =====================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
