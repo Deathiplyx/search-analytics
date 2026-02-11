@@ -1,7 +1,5 @@
 flask
-gunicorn
 flask-cors
+gunicorn
 sentence-transformers
 numpy
-scikit-learn
-
