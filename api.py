@@ -1,154 +1,92 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sqlite3
-import datetime
-import numpy as np
-from sentence_transformers import SentenceTransformer
-from sklearn.metrics.pairwise import cosine_similarity
+import os
+from datetime import datetime
 
-DB = "analytics.db"
-SIMILARITY_THRESHOLD = 0.75
-
-app = Flask(name)
+app = Flask(__name__)
 CORS(app)
 
-print("Loading embedding model...")
-model = SentenceTransformer("all-MiniLM-L6-v2")
-print("Model loaded")
+DB = "search_data.db"
 
 def init_db():
-conn = sqlite3.connect(DB)
-cur = conn.cursor()
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS topics (
-    id INTEGER PRIMARY KEY,
-    label TEXT,
-    embedding BLOB,
-    count INTEGER,
-    last_seen TEXT
-)
-""")
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS searches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            term TEXT,
+            timestamp TEXT
+        )
+    """)
 
-cur.execute("""
-CREATE TABLE IF NOT EXISTS searches (
-    id INTEGER PRIMARY KEY,
-    query TEXT,
-    topic_id INTEGER,
-    timestamp TEXT
-)
-""")
-
-conn.commit()
-conn.close()
+    conn.commit()
+    conn.close()
 
 
 init_db()
 
-def embed(text):
-vec = model.encode([text])[0]
-return vec.astype(np.float32)
 
-def serialize(vec):
-return vec.tobytes()
+def record_search(term):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
 
-def deserialize(blob):
-return np.frombuffer(blob, dtype=np.float32)
+    cur.execute(
+        "INSERT INTO searches (term, timestamp) VALUES (?, ?)",
+        (term, datetime.utcnow().isoformat())
+    )
 
-def find_matching_topic(query_vec, conn):
-cur = conn.cursor()
-cur.execute("SELECT id, embedding FROM topics")
+    conn.commit()
+    conn.close()
 
-best_id = None
-best_score = 0
 
-for topic_id, blob in cur.fetchall():
-    topic_vec = deserialize(blob)
-    score = cosine_similarity([query_vec], [topic_vec])[0][0]
+def get_stats(term):
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
 
-    if score > best_score:
-        best_score = score
-        best_id = topic_id
+    # total count for this term
+    cur.execute("SELECT COUNT(*) FROM searches WHERE term = ?", (term,))
+    count = cur.fetchone()[0]
 
-if best_score >= SIMILARITY_THRESHOLD:
-    return best_id
+    # last searched
+    cur.execute(
+        "SELECT timestamp FROM searches WHERE term = ? ORDER BY id DESC LIMIT 1",
+        (term,)
+    )
+    row = cur.fetchone()
+    last = row[0] if row else None
 
-return None
+    # total searches overall
+    cur.execute("SELECT COUNT(*) FROM searches")
+    total_all = cur.fetchone()[0]
 
-@app.route("/log")
-def log_search():
-query = request.args.get("q", "").strip().lower()
-if not query:
-return jsonify({"error": "no query"}), 400
+    conn.close()
 
-now = datetime.datetime.utcnow().isoformat()
-
-conn = sqlite3.connect(DB)
-cur = conn.cursor()
-
-vec = embed(query)
-
-topic_id = find_matching_topic(vec, conn)
-
-if topic_id:
-    # update existing topic
-    cur.execute("""
-        UPDATE topics
-        SET count = count + 1,
-            last_seen = ?
-        WHERE id = ?
-    """, (now, topic_id))
-else:
-    # create new topic
-    cur.execute("""
-        INSERT INTO topics (label, embedding, count, last_seen)
-        VALUES (?, ?, ?, ?)
-    """, (query, serialize(vec), 1, now))
-    topic_id = cur.lastrowid
-
-# store raw search
-cur.execute("""
-    INSERT INTO searches (query, topic_id, timestamp)
-    VALUES (?, ?, ?)
-""", (query, topic_id, now))
-
-conn.commit()
-conn.close()
-
-return jsonify({
-    "query": query,
-    "topic_id": topic_id
-})
-
-@app.route("/stats")
-def stats():
-conn = sqlite3.connect(DB)
-cur = conn.cursor()
-
-cur.execute("""
-    SELECT label, count, last_seen
-    FROM topics
-    ORDER BY count DESC
-    LIMIT 20
-""")
-
-topics = []
-for label, count, last_seen in cur.fetchall():
-    topics.append({
-        "topic": label,
+    return {
+        "term": term,
         "count": count,
-        "last_seen": last_seen
-    })
-
-conn.close()
-
-return jsonify({
-    "top_topics": topics
-})
+        "last_searched": last,
+        "total_searches": total_all
+    }
 
 @app.route("/")
 def home():
-return "Search analytics API running"
+    return "Search analytics API running"
 
-if name == "main":
-app.run(host="0.0.0.0", port=10000)
+
+@app.route("/search")
+def search():
+    term = request.args.get("q", "").strip().lower()
+
+    if not term:
+        return jsonify({"error": "No term"}), 400
+
+    record_search(term)
+    stats = get_stats(term)
+
+    return jsonify(stats)
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
