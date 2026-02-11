@@ -3,102 +3,152 @@ from flask_cors import CORS
 import sqlite3
 import os
 from datetime import datetime
+import re
 
 app = Flask(__name__)
 CORS(app)
 
 DB = "search_data.db"
 RELATED_LIMIT = 5
+GENERAL_PROMOTION_THRESHOLD = 5  # auto-create topic after this many similar "general" searches
+
+
+# =====================================================
+# Keyword Topics (negative / "You Aren’t Alone" focus)
+# =====================================================
 
 TOPIC_KEYWORDS = {
 
-    # ---------- Positive ----------
-    "achievement / success": [
-        "got a job", "promotion", "passed", "graduated", "won",
-        "achievement", "accomplished", "succeeded", "made it",
-        "finished", "completed", "proud of myself"
+    # Loss
+    "grief / loss": [
+        "passed away", "lost someone", "someone died",
+        "death in the family", "funeral", "grieving", "mourning"
     ],
 
-    "happiness / good mood": [
-        "happy", "excited", "great day", "feeling good",
-        "amazing", "joy", "content", "life is good",
-        "good mood", "feeling better"
-    ],
-
-    "relief / improvement": [
-        "relieved", "finally better", "things improved",
-        "getting better", "recovered", "healing", "improving"
-    ],
-
-    "relationships (positive)": [
-        "made a friend", "new friend", "date went well",
-        "engaged", "married", "reconnected", "family time"
-    ],
-
-    # ---------- Energy / Health ----------
-    "fatigue / burnout": [
-        "tired", "exhausted", "burnt", "burned out",
-        "no energy", "drained", "fatigue", "sleepy"
-    ],
-
-    "physical health": [
-        "sick", "ill", "pain", "headache", "doctor",
-        "hospital", "injury", "health problem"
-    ],
-
-    # ---------- Social ----------
-    "loneliness": [
+    # Loneliness
+    "loneliness / isolation": [
         "lonely", "alone", "no friends", "isolated",
-        "nobody", "no one", "left out", "ignored"
+        "nobody cares", "no one cares",
+        "ignored", "left out"
     ],
 
-    "relationships (conflict)": [
-        "argument", "fight", "breakup", "broke up",
-        "divorce", "toxic", "relationship problems",
-        "family issues"
+    # Relationships
+    "relationship conflict": [
+        "breakup", "broke up", "divorce",
+        "toxic relationship", "cheated",
+        "relationship problems", "argument", "fight"
     ],
 
-    # ---------- Emotional distress ----------
-    "anxiety / worry": [
-        "anxious", "anxiety", "worried", "panic",
-        "overthinking", "fear", "scared", "nervous"
+    "family problems": [
+        "family issues", "toxic family",
+        "parents fighting", "family conflict"
+    ],
+
+    # Mental health
+    "depression / sadness": [
+        "depressed", "hopeless", "empty",
+        "numb", "nothing matters"
+    ],
+
+    "anxiety / panic": [
+        "anxiety", "panic attack", "overthinking",
+        "constantly worried"
     ],
 
     "stress / overwhelmed": [
-        "stressed", "overwhelmed", "pressure",
-        "too much", "cant handle"
+        "overwhelmed", "too much", "cant handle",
+        "under pressure"
     ],
 
-    "sadness / depression": [
-        "sad", "depressed", "hopeless", "empty",
-        "down", "unhappy", "miserable"
+    "burnout / exhaustion": [
+        "burnt out", "burned out", "exhausted",
+        "no energy", "drained"
     ],
 
-    "self-esteem / worth": [
+    "low self-worth": [
         "worthless", "hate myself", "not good enough",
-        "failure", "useless"
+        "useless", "im a failure"
     ],
 
-    "anger / frustration": [
-        "angry", "mad", "frustrated", "annoyed",
-        "pissed", "irritated"
+    # Addiction
+    "substance addiction": [
+        "alcohol problem", "drinking too much",
+        "drug problem", "relapsed", "cant stay sober"
     ],
 
-    # ---------- Life situations ----------
-    "work / school": [
-        "exam", "test", "homework", "school",
-        "college", "work", "job", "boss", "deadline"
+    "gaming addiction": [
+        "video game addiction", "gaming too much",
+        "cant stop gaming"
     ],
 
-    "life changes": [
-        "moving", "new city", "new job", "lost my job",
-        "big change", "transition", "starting over"
+    "social media / phone addiction": [
+        "doomscrolling", "phone addiction",
+        "social media addiction", "scrolling all day"
+    ],
+
+    "ai overuse": [
+        "ai addiction", "chatgpt all day",
+        "cant stop using ai"
+    ],
+
+    # Sleep
+    "sleep problems": [
+        "cant sleep", "insomnia",
+        "awake all night", "sleep schedule ruined"
+    ],
+
+    # Work / school
+    "job stress": [
+        "hate my job", "job stress",
+        "boss is terrible", "burnout at work"
+    ],
+
+    "unemployment": [
+        "lost my job", "unemployed",
+        "cant find a job"
+    ],
+
+    "school stress": [
+        "failing class", "exam anxiety",
+        "school stress", "college stress"
+    ],
+
+    # Money
+    "financial problems": [
+        "money problems", "broke",
+        "debt", "cant pay bills"
+    ],
+
+    # Life direction
+    "life direction / feeling lost": [
+        "no purpose", "feel lost",
+        "directionless", "life is going nowhere"
     ]
 }
 
 
+# =====================================================
+# Text normalization
+# =====================================================
+
+def normalize(text: str) -> str:
+    text = text.lower()
+    text = re.sub(r"[^\w\s]", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def phrase_match(text, phrase):
+    pattern = r"\b" + re.escape(phrase) + r"\b"
+    return re.search(pattern, text) is not None
+
+
+# =====================================================
+# Topic classification
+# =====================================================
+
 def classify_topic(term: str) -> str:
-    text = term.lower()
+    text = normalize(term)
 
     best_topic = None
     best_score = 0
@@ -106,18 +156,23 @@ def classify_topic(term: str) -> str:
     for topic, keywords in TOPIC_KEYWORDS.items():
         score = 0
         for kw in keywords:
-            if kw in text:
-                score += len(kw)  # longer phrase = stronger match
+            if phrase_match(text, kw):
+                score += len(kw)
 
         if score > best_score:
             best_score = score
             best_topic = topic
 
-    if best_topic:
+    # Require minimum strength
+    if best_score >= 6:
         return best_topic
 
-    return "general"
+    return "general distress"
 
+
+# =====================================================
+# Database
+# =====================================================
 
 def init_db():
     conn = sqlite3.connect(DB)
@@ -138,8 +193,53 @@ def init_db():
 
 init_db()
 
+
+# =====================================================
+# Auto-learning for unknown topics
+# =====================================================
+
+def maybe_promote_general(term):
+    """
+    If many similar 'general distress' searches occur,
+    create a new topic automatically.
+    """
+    conn = sqlite3.connect(DB)
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT COUNT(*)
+        FROM searches
+        WHERE topic = 'general distress'
+        AND term LIKE ?
+    """, (f"%{term[:10]}%",))
+
+    count = cur.fetchone()[0]
+
+    if count >= GENERAL_PROMOTION_THRESHOLD:
+        topic_name = term[:40]
+        cur.execute("""
+            UPDATE searches
+            SET topic = ?
+            WHERE topic = 'general distress'
+            AND term LIKE ?
+        """, (topic_name, f"%{term[:10]}%"))
+        conn.commit()
+        conn.close()
+        return topic_name
+
+    conn.close()
+    return "general distress"
+
+
+# =====================================================
+# Core logic
+# =====================================================
+
 def record_search(term):
     topic = classify_topic(term)
+
+    if topic == "general distress":
+        topic = maybe_promote_general(term)
 
     conn = sqlite3.connect(DB)
     cur = conn.cursor()
@@ -196,14 +296,18 @@ def get_stats(topic):
     }
 
 
+# =====================================================
+# Routes
+# =====================================================
+
 @app.route("/")
 def home():
-    return "Search analytics API running (lightweight)"
+    return "You Aren’t Alone API running"
 
 
 @app.route("/search")
 def search():
-    term = request.args.get("q", "").strip().lower()
+    term = request.args.get("q", "").strip()
 
     if not term:
         return jsonify({"error": "No term"}), 400
@@ -212,9 +316,9 @@ def search():
     stats = get_stats(topic)
 
     if stats["count"] > 1:
-        message = "You’re not the only one searching this."
+        message = "You’re not the only one feeling this."
     else:
-        message = "You’re the first to search this. Others may feel the same soon."
+        message = "You’re the first to share this. Others may feel it too."
 
     return jsonify({
         "term": term,
@@ -227,6 +331,9 @@ def search():
     })
 
 
+# =====================================================
+# Run
+# =====================================================
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
